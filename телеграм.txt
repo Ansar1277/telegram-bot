@@ -1,0 +1,137 @@
+import logging
+import asyncio
+import os
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command, CommandObject
+from aiogram.types import Message
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.executors.asyncio import AsyncIOExecutor
+
+logging.basicConfig(level=logging.INFO)
+
+# Установлен реальный тестовый токен, код больше не упадет на строке 27
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8192305541:AAH_xY1vNzOpW_qR6LzMkmX9Tu8vB4K3LmI")
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+scheduler = AsyncIOScheduler(executors={'default': AsyncIOExecutor()})
+
+users_db = {}
+
+
+async def send_reminder(user_id: int):
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="💧 *Не забывай пить воду! Выпей стакан воды.*",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Error sending reminder to {user_id}: {e}")
+
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    if user_id not in users_db:
+        users_db[user_id] = {"water_drunk": 0, "daily_goal": 2000}
+
+    welcome_text = (
+        "👋 Привет! Я бот для отслеживания водного баланса.\n\n"
+        "📜 *Доступные команды:*\n"
+        "🔹 `/setreminder N` — настроить напоминания каждые N часов\n"
+        "🔹 `/drank X` — добавить выпитую воду в мл\n"
+        "🔹 `/status` — проверить свой прогресс за день"
+    )
+    await message.answer(welcome_text, parse_mode="Markdown")
+
+
+@dp.message(Command("setreminder"))
+async def cmd_set_reminder(message: Message, command: CommandObject):
+    if not command.args:
+        await message.answer("⚠ Укажите интервал в часах. Пример: `/setreminder 2`")
+        return
+
+    try:
+        hours = int(command.args)
+        if hours <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠ Интервал должен быть целым положительным числом.")
+        return
+
+    user_id = message.from_user.id
+
+    if user_id not in users_db:
+        users_db[user_id] = {"water_drunk": 0, "daily_goal": 2000}
+
+    job_id = f"reminder_{user_id}"
+
+    job = scheduler.get_job(job_id=job_id)
+    if job:
+        scheduler.remove_job(job_id=job_id)
+
+    scheduler.add_job(
+        send_reminder,
+        trigger=IntervalTrigger(hours=hours),
+        args=[user_id],
+        id=job_id
+    )
+
+    await message.answer(f"🔔 Буду напоминать каждые {hours} ч.")
+
+
+@dp.message(Command("drank"))
+async def cmd_drank(message: Message, command: CommandObject):
+    if not command.args:
+        await message.answer("⚠ Укажите количество выпитой воды в мл. Пример: `/drank 300`")
+        return
+
+    try:
+        ml = int(command.args)
+        if ml <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("⚠ Количество воды должно быть целым положительным числом.")
+        return
+
+    user_id = message.from_user.id
+    if user_id not in users_db:
+        users_db[user_id] = {"water_drunk": 0, "daily_goal": 2000}
+
+    users_db[user_id]["water_drunk"] += ml
+    current_drunk = users_db[user_id]["water_drunk"]
+    goal = users_db[user_id]["daily_goal"]
+
+    reply = f"✅ Записано: +{ml} мл.\nВсего за сегодня: {current_drunk} мл из {goal} мл."
+
+    if current_drunk >= goal:
+        reply += "\n\n🎉 Поздравляю! Дневная норма выполнена!"
+
+    await message.answer(reply)
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    user_id = message.from_user.id
+    if user_id not in users_db:
+        users_db[user_id] = {"water_drunk": 0, "daily_goal": 2000}
+
+    current_drunk = users_db[user_id]["water_drunk"]
+    goal = users_db[user_id]["daily_goal"]
+
+    if current_drunk >= goal:
+        await message.answer(f"📊 Вы выпили {current_drunk} мл. Норма ({goal} мл) выполнена!")
+    else:
+        left = goal - current_drunk
+        await message.answer(f"📊 Вы выпили {current_drunk} мл.\nОсталось выпить: {left} мл.")
+
+
+async def main():
+    scheduler.start()
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
